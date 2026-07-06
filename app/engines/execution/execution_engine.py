@@ -151,22 +151,28 @@ class ExecutionEngine:
                             try:
                                 template = cv2.imread(crop_path, cv2.IMREAD_GRAYSCALE)
                                 if template is not None:
-                                    # Capture live screen
-                                    screen = ImageGrab.grab()
-                                    screen_np = np.array(screen)
-                                    screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
-                                    
-                                    # Perform OpenCV matching
-                                    res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
-                                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                                    
-                                    if max_val >= 0.8:
-                                        h, w = template.shape
-                                        target_x = max_loc[0] + w // 2
-                                        target_y = max_loc[1] + h // 2
-                                        logger.info(f"🤖 Vision Engine: Visual match successful! Score: {max_val:.2f} at ({target_x}, {target_y})")
+                                    # Ensure the template has texture/entropy to prevent solid color false matching
+                                    # (e.g. clicking inside blank text editors)
+                                    std_dev = np.std(template)
+                                    if std_dev < 3.0:
+                                        logger.warning(f"🤖 Vision Engine: Template crop is low-texture (std_dev: {std_dev:.2f}). Skipping visual match to prevent false positives.")
                                     else:
-                                        logger.warning(f"🤖 Vision Engine: Low match confidence ({max_val:.2f} < 0.80). Falling back to relative coordinate.")
+                                        # Capture live screen
+                                        screen = ImageGrab.grab()
+                                        screen_np = np.array(screen)
+                                        screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+                                        
+                                        # Perform OpenCV matching
+                                        res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+                                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                        
+                                        if max_val >= 0.8:
+                                            h, w = template.shape
+                                            target_x = max_loc[0] + w // 2
+                                            target_y = max_loc[1] + h // 2
+                                            logger.info(f"🤖 Vision Engine: Visual match successful! Score: {max_val:.2f} at ({target_x}, {target_y})")
+                                        else:
+                                            logger.warning(f"🤖 Vision Engine: Low match confidence ({max_val:.2f} < 0.80). Falling back to relative coordinate.")
                             except Exception as e:
                                 logger.warning(f"🤖 Vision Engine error: {e}. Falling back to relative coordinate.")
                     
