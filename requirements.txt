@@ -7,3 +7,4 @@ pywin32; sys_platform == 'win32'
 torch
 customtkinter
 opencv-python
+gradio_client

@@ -142,39 +142,78 @@ class ExecutionEngine:
                     target_x = win_left + rel_x
                     target_y = win_top + rel_y
                     
-                    # Visual template matching (Version 2)
-                    crop_file = step.get("crop_file")
-                    if crop_file:
-                        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-                        crop_path = os.path.join(project_root, "data", "trained_models", session_id, crop_file)
-                        if os.path.exists(crop_path):
+                    # Visual target finding (Version 2 Online Vision Transformer & OpenCV Hybrid Pipeline)
+                    vision_success = False
+                    
+                    # 1. Parse target text label from action description (e.g. "Click FILE" -> "FILE")
+                    target_label = "button"
+                    parts = action_desc.split()
+                    if len(parts) > 1:
+                        candidate = parts[1]
+                        if candidate.lower() not in ["left", "right"]:
+                            target_label = candidate
+                        elif len(parts) > 2:
+                            target_label = parts[2]
+                    
+                    # Clean target label (remove coordinates like "(15, 30)" or special characters)
+                    target_label = "".join(c for c in target_label if c.isalnum()).strip()
+                    if not target_label:
+                        target_label = "button"
+                        
+                    # Save a temporary screenshot to query the online API
+                    temp_screen_path = os.path.abspath("temp_live_screen.png")
+                    try:
+                        live_screen = ImageGrab.grab()
+                        live_screen.save(temp_screen_path)
+                        
+                        # Query HF Serverless Vision Transformer (OwlViT)
+                        hf_coords = self._query_online_transformer(temp_screen_path, target_label)
+                        if hf_coords is not None:
+                            target_x, target_y = hf_coords
+                            vision_success = True
+                    except Exception as e:
+                        logger.warning(f"🤖 Vision Transformer execution failed: {e}")
+                    finally:
+                        if os.path.exists(temp_screen_path):
                             try:
-                                template = cv2.imread(crop_path, cv2.IMREAD_GRAYSCALE)
-                                if template is not None:
-                                    # Ensure the template has texture/entropy to prevent solid color false matching
-                                    # (e.g. clicking inside blank text editors)
-                                    std_dev = np.std(template)
-                                    if std_dev < 3.0:
-                                        logger.warning(f"🤖 Vision Engine: Template crop is low-texture (std_dev: {std_dev:.2f}). Skipping visual match to prevent false positives.")
-                                    else:
-                                        # Capture live screen
-                                        screen = ImageGrab.grab()
-                                        screen_np = np.array(screen)
-                                        screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
-                                        
-                                        # Perform OpenCV matching
-                                        res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
-                                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                                        
-                                        if max_val >= 0.8:
-                                            h, w = template.shape
-                                            target_x = max_loc[0] + w // 2
-                                            target_y = max_loc[1] + h // 2
-                                            logger.info(f"🤖 Vision Engine: Visual match successful! Score: {max_val:.2f} at ({target_x}, {target_y})")
+                                os.remove(temp_screen_path)
+                            except Exception:
+                                pass
+                                
+                    # 2. Fallback to Local OpenCV template matching if online API failed or was skipped
+                    if not vision_success:
+                        crop_file = step.get("crop_file")
+                        if crop_file:
+                            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                            crop_path = os.path.join(project_root, "data", "trained_models", session_id, crop_file)
+                            if os.path.exists(crop_path):
+                                try:
+                                    template = cv2.imread(crop_path, cv2.IMREAD_GRAYSCALE)
+                                    if template is not None:
+                                        std_dev = np.std(template)
+                                        if std_dev < 3.0:
+                                            logger.warning(f"🤖 Vision Engine: Template crop is low-texture (std_dev: {std_dev:.2f}). Skipping visual match.")
                                         else:
-                                            logger.warning(f"🤖 Vision Engine: Low match confidence ({max_val:.2f} < 0.80). Falling back to relative coordinate.")
-                            except Exception as e:
-                                logger.warning(f"🤖 Vision Engine error: {e}. Falling back to relative coordinate.")
+                                            screen = ImageGrab.grab()
+                                            screen_np = np.array(screen)
+                                            screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+                                            
+                                            res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+                                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                            
+                                            if max_val >= 0.8:
+                                                h, w = template.shape
+                                                target_x = max_loc[0] + w // 2
+                                                target_y = max_loc[1] + h // 2
+                                                logger.info(f"🤖 Vision Engine: OpenCV match successful! Score: {max_val:.2f} at ({target_x}, {target_y})")
+                                                vision_success = True
+                                            else:
+                                                logger.warning(f"🤖 Vision Engine: OpenCV low confidence ({max_val:.2f} < 0.80).")
+                                except Exception as e:
+                                    logger.warning(f"🤖 Vision Engine error: {e}")
+                                    
+                    if not vision_success:
+                        logger.info(f"🤖 Vision System: Using relative coordinates default ({target_x}, {target_y})")
                     
                     is_double = "Double" in action_desc or step.get("double_click", False)
                     button = Button.right if "RIGHT" in action_desc else Button.left
@@ -391,16 +430,22 @@ class ExecutionEngine:
                 elif app_sig == "explorer":
                     subprocess.Popen(["explorer.exe"])
                 elif app_sig == "browser":
-                    # Look up Brave or Chrome locally, else fallback to default browser
+                    # Look up Chrome or Brave locally, else fallback to default browser
                     launched_spec = False
-                    brave_paths = [
+                    browser_paths = [
+                        # Chrome
+                        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+                        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+                        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+                        # Brave
                         os.path.expandvars(r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe"),
                         os.path.expandvars(r"%ProgramFiles(x86)%\BraveSoftware\Brave-Browser\Application\brave.exe"),
                         os.path.expandvars(r"%LocalAppData%\BraveSoftware\Brave-Browser\Application\brave.exe"),
                     ]
-                    for path in brave_paths:
+                    for path in browser_paths:
                         if os.path.exists(path):
-                            subprocess.Popen([path])
+                            # Start Chrome/Brave in Guest Mode to secure email access
+                            subprocess.Popen([path, "--guest"])
                             launched_spec = True
                             break
                     if not launched_spec:
@@ -433,3 +478,63 @@ class ExecutionEngine:
                 
         # If no match found, return a default out-of-bounds float
         return -1.0
+
+    def _query_online_transformer(self, screenshot_path: str, target_label: str):
+        """Queries Hugging Face Serverless Inference API for visual grounding using OwlViT."""
+        try:
+            import base64
+            import httpx
+            
+            API_URL = "https://api-inference.huggingface.co/models/google/owlv2-base-patch16-ensemble"
+            
+            # Load and encode image
+            with open(screenshot_path, "rb") as f:
+                img_bytes = f.read()
+                img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                
+            payload = {
+                "inputs": {
+                    "image": img_base64,
+                    "candidate_labels": [target_label]
+                }
+            }
+            
+            # If user has a token set in environment, use it, else query anonymously
+            headers = {}
+            hf_token = os.getenv("HF_API_TOKEN")
+            if hf_token:
+                headers["Authorization"] = f"Bearer {hf_token}"
+                
+            logger.info(f"🤖 Vision Transformer: Querying Hugging Face online for target '{target_label}'...")
+            
+            # Use httpx to POST to Hugging Face Inference API
+            response = httpx.post(API_URL, json=payload, headers=headers, timeout=20.0)
+            
+            if response.status_code == 200:
+                results = response.json()
+                if results and isinstance(results, list):
+                    # Sort by confidence score
+                    results = sorted(results, key=lambda x: x.get("score", 0.0), reverse=True)
+                    best_match = results[0]
+                    score = best_match.get("score", 0.0)
+                    
+                    if score > 0.15: # OwlViT threshold
+                        box = best_match.get("box", {})
+                        xmin = box.get("xmin", 0)
+                        ymin = box.get("ymin", 0)
+                        xmax = box.get("xmax", 0)
+                        ymax = box.get("ymax", 0)
+                        
+                        # Get center point of detection
+                        center_x = int((xmin + xmax) / 2)
+                        center_y = int((ymin + ymax) / 2)
+                        
+                        logger.info(f"🤖 Vision Transformer: Found '{target_label}' with confidence {score:.2f} at absolute ({center_x}, {center_y})")
+                        return center_x, center_y
+                    else:
+                        logger.warning(f"🤖 Vision Transformer: Low confidence score {score:.2f} for '{target_label}'.")
+            else:
+                logger.warning(f"🤖 Vision Transformer: HF API returned status {response.status_code}: {response.text}")
+        except Exception as e:
+            logger.warning(f"🤖 Vision Transformer error: {e}")
+        return None
