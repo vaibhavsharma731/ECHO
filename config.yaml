@@ -1,0 +1,23 @@
+# ECHO Configuration Settings
+# This file is like the "recipe book" for our app. It tells the app how to behave.
+
+app:
+  name: "ECHO"
+  version: "1.0.0"
+
+logging:
+  level: "INFO"               # Can be DEBUG, INFO, WARNING, ERROR
+  log_dir: "data/logs"        # Where we save the logs
+
+observation:
+  # How often to take screenshots (e.g., 1.0 means every 1 second, 0.5 means twice a second)
+  screenshot_interval: 1.0
+  
+  # Image format for screenshots (png or jpeg)
+  screenshot_format: "jpeg"
+  
+  # Image quality (only matters for jpeg) - 1 to 100
+  screenshot_quality: 80
+  
+  # Where to save recorded observation sessions
+  output_dir: "data/observations"

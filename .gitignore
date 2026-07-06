@@ -1,0 +1,30 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python Cache
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local Application Data & Logs
+data/observations/*
+!data/observations/.gitkeep
+
+data/trained_models/*
+!data/trained_models/.gitkeep
+
+data/logs/*
+!data/logs/.gitkeep
+
+data/task_library/*
+!data/task_library/.gitkeep
+
+*.log
+data/logs/echo.log
+
+# Editor Settings
+.vscode/
+.idea/
