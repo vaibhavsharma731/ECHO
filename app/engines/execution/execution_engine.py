@@ -8,6 +8,7 @@ from PIL import ImageGrab
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, KeyCode, Controller as KeyboardController
 
+from app.services.config.config_manager import config_manager
 from app.services.logging.logger import logger
 from app.services.utilities.window_helper import get_active_window_title
 from app.models.workflow_model import WorkflowMLP
@@ -27,46 +28,42 @@ class ExecutionEngine:
         """
         logger.info(f"ExecutionEngine: Initializing playback for session: {session_id}")
         
-        # 1. Setup paths
-        output_dir = config_manager.get("observation.output_dir", "data/observations")
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        
-        # Model files path
-        model_save_dir = os.path.join(project_root, "data", "trained_models", session_id)
-        model_path = os.path.join(model_save_dir, "model.pth")
-        window_map_path = os.path.join(model_save_dir, "window_map.json")
-        
-        # Original steps summary path
-        session_dir = os.path.join(project_root, output_dir, session_id)
-        summary_path = os.path.join(session_dir, "workflow_summary.json")
-
-        # Check files exist
-        if not (os.path.exists(model_path) and os.path.exists(window_map_path) and os.path.exists(summary_path)):
-            logger.error("ExecutionEngine: Missing required model or workflow files for playback.")
-            return False
-
-        # 2. Load model weights, window map, and steps list
         try:
+            # 1. Setup paths
+            output_dir = config_manager.get("observation.output_dir", "data/observations")
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            
+            # Model files path
+            model_save_dir = os.path.join(project_root, "data", "trained_models", session_id)
+            model_path = os.path.join(model_save_dir, "model.pth")
+            window_map_path = os.path.join(model_save_dir, "window_map.json")
+            
+            # Original steps summary path
+            session_dir = os.path.join(project_root, output_dir, session_id)
+            summary_path = os.path.join(session_dir, "workflow_summary.json")
+
+            # Check files exist
+            if not (os.path.exists(model_path) and os.path.exists(window_map_path) and os.path.exists(summary_path)):
+                logger.error("ExecutionEngine: Missing required model or workflow files for playback.")
+                return False
+
+            # 2. Load model weights, window map, and steps list
             with open(window_map_path, 'r', encoding='utf-8') as f:
                 window_map = json.load(f)
             with open(summary_path, 'r', encoding='utf-8') as f:
                 workflow_data = json.load(f)
-        except Exception as e:
-            logger.error(f"ExecutionEngine: Failed to load configuration files: {e}")
-            return False
 
-        steps = workflow_data.get("steps", [])
-        if not steps:
-            logger.error("ExecutionEngine: No steps found in workflow_summary.json. Nothing to run.")
-            return False
+            steps = workflow_data.get("steps", [])
+            if not steps:
+                logger.error("ExecutionEngine: No steps found in workflow_summary.json. Nothing to run.")
+                return False
 
-        # Load PyTorch MLP
-        model = WorkflowMLP(input_dim=3, hidden_dim=16, num_classes=4)
-        try:
+            # Load PyTorch MLP
+            model = WorkflowMLP(input_dim=3, hidden_dim=16, num_classes=4)
             model.load_state_dict(torch.load(model_path))
             model.eval() # Set model to evaluation mode
         except Exception as e:
-            logger.error(f"ExecutionEngine: Failed to load PyTorch model weights: {e}")
+            logger.error(f"ExecutionEngine: Initialization error: {e}")
             return False
 
         # 3. Setup controllers
