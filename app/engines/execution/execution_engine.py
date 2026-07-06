@@ -90,24 +90,8 @@ class ExecutionEngine:
                 timestamp = step.get("timestamp", 0.0)
                 target_win_title = step.get("window", "Desktop")
                 
-                # Skip taskbar/desktop clicks only if we successfully launch/focus the target app
-                if ("taskbar" in target_win_title.lower() or "desktop" in target_win_title.lower() or "unknown" in target_win_title.lower()) and "Click" in action_desc:
-                    next_real_win = None
-                    for future_step in steps[idx+1:]:
-                        f_win = future_step.get("window", "")
-                        if f_win and not any(sys_name in f_win.lower() for sys_name in ["taskbar", "desktop", "unknown"]):
-                            next_real_win = f_win
-                            break
-                    if next_real_win:
-                        logger.info(f"🤖 Attempting to launch target app directly: '{next_real_win}'...")
-                        win = self._activate_window(next_real_win)
-                        if win is not None:
-                            logger.info("🤖 App focused successfully. Bypassing taskbar click.")
-                            last_action_id = 0.0
-                            time.sleep(0.3)
-                            continue
-                        else:
-                            logger.warning("🤖 Auto-launch failed. Falling back to recorded Taskbar/Desktop click coordinates...")
+                # ECHO replays exactly what was demonstrated — no bypass logic.
+                # Taskbar/Desktop clicks are replayed at their recorded absolute coordinates.
                 
                 # B. Query desktop state (Perception)
                 current_window = get_active_window_title()
@@ -142,78 +126,62 @@ class ExecutionEngine:
                     target_x = win_left + rel_x
                     target_y = win_top + rel_y
                     
-                    # Visual target finding (Version 2 Online Vision Transformer & OpenCV Hybrid Pipeline)
+                    # Visual target finding: crop-gated hybrid pipeline
+                    # Vision matching ONLY runs when a visual crop was captured during training.
+                    # This prevents unnecessary API calls and network delays on plain clicks.
                     vision_success = False
+                    crop_file = step.get("crop_file")
                     
-                    # 1. Parse target text label from action description (e.g. "Click FILE" -> "FILE")
-                    target_label = "button"
-                    parts = action_desc.split()
-                    if len(parts) > 1:
-                        candidate = parts[1]
-                        if candidate.lower() not in ["left", "right"]:
-                            target_label = candidate
-                        elif len(parts) > 2:
-                            target_label = parts[2]
-                    
-                    # Clean target label (remove coordinates like "(15, 30)" or special characters)
-                    target_label = "".join(c for c in target_label if c.isalnum()).strip()
-                    if not target_label:
-                        target_label = "button"
-                        
-                    # Save a temporary screenshot to query the online API
-                    temp_screen_path = os.path.abspath("temp_live_screen.png")
-                    try:
-                        live_screen = ImageGrab.grab()
-                        live_screen.save(temp_screen_path)
-                        
-                        # Query HF Serverless Vision Transformer (OwlViT)
-                        hf_coords = self._query_online_transformer(temp_screen_path, target_label)
-                        if hf_coords is not None:
-                            target_x, target_y = hf_coords
-                            vision_success = True
-                    except Exception as e:
-                        logger.warning(f"🤖 Vision Transformer execution failed: {e}")
-                    finally:
-                        if os.path.exists(temp_screen_path):
+                    if crop_file:
+                        crop_path = os.path.join(project_root, "data", "trained_models", session_id, crop_file)
+                        if os.path.exists(crop_path):
+                            # Step 1: Try fast local OpenCV template matching first (no network required)
                             try:
-                                os.remove(temp_screen_path)
-                            except Exception:
-                                pass
-                                
-                    # 2. Fallback to Local OpenCV template matching if online API failed or was skipped
-                    if not vision_success:
-                        crop_file = step.get("crop_file")
-                        if crop_file:
-                            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-                            crop_path = os.path.join(project_root, "data", "trained_models", session_id, crop_file)
-                            if os.path.exists(crop_path):
-                                try:
-                                    template = cv2.imread(crop_path, cv2.IMREAD_GRAYSCALE)
-                                    if template is not None:
-                                        std_dev = np.std(template)
-                                        if std_dev < 3.0:
-                                            logger.warning(f"🤖 Vision Engine: Template crop is low-texture (std_dev: {std_dev:.2f}). Skipping visual match.")
+                                template = cv2.imread(crop_path, cv2.IMREAD_GRAYSCALE)
+                                if template is not None:
+                                    std_dev = np.std(template)
+                                    if std_dev < 3.0:
+                                        logger.warning(f"🤖 Vision Engine: Crop is low-texture (std_dev: {std_dev:.2f}). Skipping visual match.")
+                                    else:
+                                        screen = ImageGrab.grab()
+                                        screen_np = np.array(screen)
+                                        screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+                                        
+                                        res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+                                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                        
+                                        if max_val >= 0.80:
+                                            h, w = template.shape
+                                            target_x = max_loc[0] + w // 2
+                                            target_y = max_loc[1] + h // 2
+                                            logger.info(f"🤖 Vision Engine [OpenCV]: Match found! Score: {max_val:.2f} at ({target_x}, {target_y})")
+                                            vision_success = True
                                         else:
-                                            screen = ImageGrab.grab()
-                                            screen_np = np.array(screen)
-                                            screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+                                            logger.info(f"🤖 Vision Engine [OpenCV]: Low confidence ({max_val:.2f}). Trying online transformer...")
                                             
-                                            res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
-                                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                                            
-                                            if max_val >= 0.8:
-                                                h, w = template.shape
-                                                target_x = max_loc[0] + w // 2
-                                                target_y = max_loc[1] + h // 2
-                                                logger.info(f"🤖 Vision Engine: OpenCV match successful! Score: {max_val:.2f} at ({target_x}, {target_y})")
-                                                vision_success = True
-                                            else:
-                                                logger.warning(f"🤖 Vision Engine: OpenCV low confidence ({max_val:.2f} < 0.80).")
-                                except Exception as e:
-                                    logger.warning(f"🤖 Vision Engine error: {e}")
-                                    
+                                            # Step 2: OpenCV failed — try online OwlViT as a bonus enhancement
+                                            temp_screen_path = os.path.abspath("temp_live_screen.png")
+                                            try:
+                                                screen.save(temp_screen_path)
+                                                # Use the crop image filename as the semantic label hint
+                                                hf_coords = self._query_online_transformer(temp_screen_path, crop_file)
+                                                if hf_coords is not None:
+                                                    target_x, target_y = hf_coords
+                                                    vision_success = True
+                                                    logger.info(f"🤖 Vision Engine [OwlViT]: Found target at ({target_x}, {target_y})")
+                                            except Exception as e:
+                                                logger.warning(f"🤖 Vision Engine [OwlViT]: Failed: {e}")
+                                            finally:
+                                                if os.path.exists(temp_screen_path):
+                                                    try:
+                                                        os.remove(temp_screen_path)
+                                                    except Exception:
+                                                        pass
+                            except Exception as e:
+                                logger.warning(f"🤖 Vision Engine error: {e}")
+                    
                     if not vision_success:
-                        logger.info(f"🤖 Vision System: Using relative coordinates default ({target_x}, {target_y})")
+                        logger.info(f"🤖 Vision System: Using recorded relative coordinates ({target_x}, {target_y})")
                     
                     is_double = "Double" in action_desc or step.get("double_click", False)
                     button = Button.right if "RIGHT" in action_desc else Button.left
@@ -444,8 +412,9 @@ class ExecutionEngine:
                     ]
                     for path in browser_paths:
                         if os.path.exists(path):
-                            # Start Chrome/Brave in Guest Mode to secure email access
-                            subprocess.Popen([path, "--guest"])
+                            # Launch Chrome/Brave exactly as the user has it — no extra flags.
+                            # ECHO replicates what was demonstrated, not what it thinks is "better".
+                            subprocess.Popen([path])
                             launched_spec = True
                             break
                     if not launched_spec:
