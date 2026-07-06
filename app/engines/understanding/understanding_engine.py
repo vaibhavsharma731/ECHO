@@ -126,14 +126,15 @@ class WorkflowUnderstandingEngine:
 
             # B. Process Mouse Clicks
             elif event_type == "mouse_click":
-                # Only log click ONCE when button is pressed (not when released)
-                if event.get("pressed", False):
+                # Process click when it is released/committed (pressed is False)
+                if not event.get("pressed", False):
                     commit_typing()
                     button = event.get("button", "left")
                     x = event.get("x", 0)
                     y = event.get("y", 0)
                     rel_x = event.get("rel_x", x)
                     rel_y = event.get("rel_y", y)
+                    crop_file = event.get("crop_file", None)
                     
                     is_double_click = False
                     # Check if previous step was also a single click on the same button/window within 0.5s and 10px
@@ -157,8 +158,33 @@ class WorkflowUnderstandingEngine:
                             "rel_y": rel_y,
                             "x": x,
                             "y": y,
-                            "double_click": False
+                            "double_click": False,
+                            "crop_file": crop_file
                         })
+
+            # B2. Process Mouse Drag and Drop
+            elif event_type == "mouse_drag":
+                commit_typing()
+                button = event.get("button", "left")
+                start_x = event.get("start_x", 0)
+                start_y = event.get("start_y", 0)
+                start_rel_x = event.get("start_rel_x", 0)
+                start_rel_y = event.get("start_rel_y", 0)
+                end_x = event.get("end_x", 0)
+                end_y = event.get("end_y", 0)
+                end_rel_x = event.get("end_rel_x", 0)
+                end_rel_y = event.get("end_rel_y", 0)
+                
+                steps.append({
+                    "action": f"Drag {button.upper()} from ({start_rel_x}, {start_rel_y}) to ({end_rel_x}, {end_rel_y})",
+                    "window": active_win,
+                    "timestamp": timestamp,
+                    "start_rel_x": start_rel_x,
+                    "start_rel_y": start_rel_y,
+                    "end_rel_x": end_rel_x,
+                    "end_rel_y": end_rel_y,
+                    "button": button
+                })
 
             # C. Process Mouse Scroll
             elif event_type == "mouse_scroll":

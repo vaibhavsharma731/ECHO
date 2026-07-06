@@ -2,6 +2,9 @@ import os
 import json
 import time
 import torch
+import cv2
+import numpy as np
+from PIL import ImageGrab
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, KeyCode, Controller as KeyboardController
 
@@ -16,7 +19,7 @@ class ExecutionEngine:
     and relative coordinates for robustness.
     """
     def __init__(self):
-        pass
+        self.launched_apps = set()
 
     def run_workflow(self, session_id: str, safety_engine, explainability_engine) -> bool:
         """
@@ -77,6 +80,7 @@ class ExecutionEngine:
         logger.info("🤖 AUTONOMOUS AGENT PLAYBACK ACTIVE")
         logger.info("=========================================")
         
+        self.launched_apps.clear()
         last_action_id = 0.0
         success = True
         
@@ -135,12 +139,39 @@ class ExecutionEngine:
                     rel_x = step.get("rel_x", 0)
                     rel_y = step.get("rel_y", 0)
                     
-                    # Reconstruct absolute coordinate based on target window position
+                    # Reconstruct default absolute coordinate based on target window position
                     win_left = win.left if win is not None else 0
                     win_top = win.top if win is not None else 0
-                    
                     target_x = win_left + rel_x
                     target_y = win_top + rel_y
+                    
+                    # Visual template matching (Version 2)
+                    crop_file = step.get("crop_file")
+                    if crop_file:
+                        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                        crop_path = os.path.join(project_root, "data", "trained_models", session_id, crop_file)
+                        if os.path.exists(crop_path):
+                            try:
+                                template = cv2.imread(crop_path, cv2.IMREAD_GRAYSCALE)
+                                if template is not None:
+                                    # Capture live screen
+                                    screen = ImageGrab.grab()
+                                    screen_np = np.array(screen)
+                                    screen_gray = cv2.cvtColor(screen_np, cv2.COLOR_RGB2GRAY)
+                                    
+                                    # Perform OpenCV matching
+                                    res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+                                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                    
+                                    if max_val >= 0.8:
+                                        h, w = template.shape
+                                        target_x = max_loc[0] + w // 2
+                                        target_y = max_loc[1] + h // 2
+                                        logger.info(f"🤖 Vision Engine: Visual match successful! Score: {max_val:.2f} at ({target_x}, {target_y})")
+                                    else:
+                                        logger.warning(f"🤖 Vision Engine: Low match confidence ({max_val:.2f} < 0.80). Falling back to relative coordinate.")
+                            except Exception as e:
+                                logger.warning(f"🤖 Vision Engine error: {e}. Falling back to relative coordinate.")
                     
                     is_double = "Double" in action_desc or step.get("double_click", False)
                     button = Button.right if "RIGHT" in action_desc else Button.left
@@ -161,6 +192,35 @@ class ExecutionEngine:
                         time.sleep(0.2)
                         mouse_ctrl.click(button, 1)
                         
+                    last_action_id = 0.0
+                    
+                elif "Drag" in action_desc:
+                    win = self._activate_window(target_win_title)
+                    
+                    start_rel_x = step.get("start_rel_x", 0)
+                    start_rel_y = step.get("start_rel_y", 0)
+                    end_rel_x = step.get("end_rel_x", 0)
+                    end_rel_y = step.get("end_rel_y", 0)
+                    
+                    win_left = win.left if win is not None else 0
+                    win_top = win.top if win is not None else 0
+                    
+                    start_x = win_left + start_rel_x
+                    start_y = win_top + start_rel_y
+                    end_x = win_left + end_rel_x
+                    end_y = win_top + end_rel_y
+                    
+                    logger.info(f"🤖 Executing Drag: ({start_x}, {start_y}) -> ({end_x}, {end_y})")
+                    
+                    # Move to start, click hold, slide to end, and release
+                    mouse_ctrl.position = (start_x, start_y)
+                    time.sleep(0.2)
+                    mouse_ctrl.press(Button.left)
+                    time.sleep(0.2)
+                    mouse_ctrl.position = (end_x, end_y)
+                    time.sleep(0.2)
+                    mouse_ctrl.release(Button.left)
+                    
                     last_action_id = 0.0
                     
                 elif "Hotkey" in action_desc:
@@ -272,6 +332,8 @@ class ExecutionEngine:
         """Finds the window matching target_title, activates it, and brings it to front."""
         try:
             import pygetwindow as gw
+            import subprocess
+            import webbrowser
             target_title_lower = target_title.lower()
             
             # Desktop/Taskbar activation is skipped
@@ -281,26 +343,76 @@ class ExecutionEngine:
             def clean_title(t):
                 return t.strip("* ").lower()
                 
-            all_wins = gw.getAllWindows()
-            for win in all_wins:
-                if win.title:
-                    c_title = clean_title(win.title)
-                    t_title = clean_title(target_title)
-                    if t_title in c_title or c_title in t_title:
-                        # Restore if minimized
-                        try:
-                            if win.isMinimized:
-                                win.restore()
-                        except Exception:
-                            pass
-                        # Activate/Focus
-                        try:
-                            win.activate()
-                        except Exception:
-                            pass
-                        logger.info(f"🤖 Auto-Activated window: '{win.title}'")
-                        time.sleep(0.3) # Wait for window focus
+            def find_window():
+                all_wins = gw.getAllWindows()
+                for win in all_wins:
+                    if win.title:
+                        c_title = clean_title(win.title)
+                        t_title = clean_title(target_title)
+                        if t_title in c_title or c_title in t_title:
+                            try:
+                                if win.isMinimized:
+                                    win.restore()
+                            except Exception:
+                                pass
+                            try:
+                                win.activate()
+                            except Exception:
+                                pass
+                            logger.info(f"🤖 Auto-Activated window: '{win.title}'")
+                            time.sleep(0.3)
+                            return win
+                return None
+
+            # Try to activate if already open
+            win = find_window()
+            if win is not None:
+                return win
+
+            # If not open, check if we have already spawned this app signature in this session
+            # to prevent multiple duplicate swarms of windows
+            app_sig = None
+            if "notepad" in target_title_lower:
+                app_sig = "notepad"
+            elif "explorer" in target_title_lower or "folder" in target_title_lower:
+                app_sig = "explorer"
+            elif "edge" in target_title_lower or "chrome" in target_title_lower or "brave" in target_title_lower or "browser" in target_title_lower:
+                app_sig = "browser"
+
+            if app_sig and app_sig not in self.launched_apps:
+                logger.info(f"🤖 Target window '{target_title}' not open. Spawning {app_sig} (Safe Auto-Launch)...")
+                self.launched_apps.add(app_sig)
+                
+                if app_sig == "notepad":
+                    subprocess.Popen(["notepad.exe"])
+                elif app_sig == "explorer":
+                    subprocess.Popen(["explorer.exe"])
+                elif app_sig == "browser":
+                    # Look up Brave or Chrome locally, else fallback to default browser
+                    launched_spec = False
+                    brave_paths = [
+                        os.path.expandvars(r"%ProgramFiles%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+                        os.path.expandvars(r"%ProgramFiles(x86)%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+                        os.path.expandvars(r"%LocalAppData%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+                    ]
+                    for path in brave_paths:
+                        if os.path.exists(path):
+                            subprocess.Popen([path])
+                            launched_spec = True
+                            break
+                    if not launched_spec:
+                        webbrowser.open("https://www.google.com")
+
+                # Poll for the window to load (max 3.0s)
+                for _ in range(30):
+                    time.sleep(0.1)
+                    win = find_window()
+                    if win is not None:
                         return win
+            else:
+                if app_sig:
+                    logger.warning(f"🤖 Target window '{target_title}' not open, but {app_sig} was already spawned. Skipping duplicate launch.")
+
         except Exception as e:
             logger.warning(f"ExecutionEngine: Failed to activate window '{target_title}': {e}")
         return None

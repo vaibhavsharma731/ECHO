@@ -34,6 +34,7 @@ class ObservationEngine:
         
         # Track active modifier keys for shortcuts (e.g. Ctrl, Shift, Alt)
         self.active_modifiers = set()
+        self._drag_start = None
 
     def start_observation(self):
         """Starts recording mouse clicks, movement, keystrokes, and screen captures."""
@@ -211,18 +212,66 @@ class ObservationEngine:
     def _on_mouse_click(self, x, y, button, pressed):
         if not self._is_observing:
             return
+            
         rel_x, rel_y = self._get_relative_coords(x, y)
-        self._record_event({
-            "type": "mouse_click",
-            "timestamp": self._get_elapsed_time(),
-            "active_window": get_active_window_title(),
-            "x": x,
-            "y": y,
-            "rel_x": rel_x,
-            "rel_y": rel_y,
-            "button": button.name,
-            "pressed": pressed
-        })
+        
+        if pressed:
+            self._drag_start = (x, y, rel_x, rel_y)
+        else:
+            # Check if we have a drag start event
+            if self._drag_start is not None:
+                start_x, start_y, start_rel_x, start_rel_y = self._drag_start
+                self._drag_start = None
+                
+                # Calculate distance
+                import math
+                dist = math.sqrt((x - start_x)**2 + (y - start_y)**2)
+                
+                if dist > 15:
+                    # Log as a mouse drag
+                    self._record_event({
+                        "type": "mouse_drag",
+                        "timestamp": self._get_elapsed_time(),
+                        "active_window": get_active_window_title(),
+                        "start_x": start_x,
+                        "start_y": start_y,
+                        "start_rel_x": start_rel_x,
+                        "start_rel_y": start_rel_y,
+                        "end_x": x,
+                        "end_y": y,
+                        "end_rel_x": rel_x,
+                        "end_rel_y": rel_y,
+                        "button": button.name
+                    })
+                    return
+
+            # Grab visual crop centered on click point (40x40 pixel bbox)
+            crop_filename = None
+            try:
+                # Capture screen box using PIL (bounding box: left, top, right, bottom)
+                bbox = (max(0, x - 20), max(0, y - 20), x + 20, y + 20)
+                crop_img = ImageGrab.grab(bbox=bbox)
+                
+                timestamp = int(time.time() * 1000)
+                crop_filename = f"crop_{timestamp}.png"
+                crop_path = os.path.join(self.session_dir, crop_filename)
+                crop_img.save(crop_path, format="PNG")
+            except Exception as e:
+                logger.warning(f"ObservationEngine: Failed to capture visual crop: {e}")
+                
+            # Log as a standard mouse click
+            self._record_event({
+                "type": "mouse_click",
+                "timestamp": self._get_elapsed_time(),
+                "active_window": get_active_window_title(),
+                "x": x,
+                "y": y,
+                "rel_x": rel_x,
+                "rel_y": rel_y,
+                "button": button.name,
+                "pressed": False,
+                "crop_file": crop_filename
+            })
 
     def _on_mouse_scroll(self, x, y, dx, dy):
         if not self._is_observing:

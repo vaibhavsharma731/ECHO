@@ -149,6 +149,12 @@ class TeachingEngine:
             with open(window_map_path, 'w', encoding='utf-8') as f:
                 json.dump(window_map, f, indent=4)
                 
+            # Copy all crop_*.png files from session_dir to model_save_dir for visual template matching
+            import shutil
+            for filename in os.listdir(session_dir):
+                if filename.startswith("crop_") and filename.endswith(".png"):
+                    shutil.copy2(os.path.join(session_dir, filename), os.path.join(model_save_dir, filename))
+                
             logger.info("TeachingEngine: Training completed successfully!")
             logger.info(f"TeachingEngine: Model saved to: {model_path}")
             logger.info(f"TeachingEngine: Window map saved to: {window_map_path}")

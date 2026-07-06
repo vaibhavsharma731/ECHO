@@ -6,3 +6,4 @@ pywin32; sys_platform == 'win32'
 --index-url https://download.pytorch.org/whl/cpu
 torch
 customtkinter
+opencv-python
